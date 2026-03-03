@@ -1,0 +1,18 @@
+{
+  "event_caps": {
+    "Packet speed": 207300.0,
+    "Data speed": 221.0,
+    "Avg packet len": 1506.0,
+    "Avg source IP count": 61.0,
+    "Detect count": 67.0
+  },
+  "component_caps": {
+    "Packet speed": 468000.0,
+    "Data speed": 392.0,
+    "Avg packet len": 1518.0,
+    "Source IP count": 2499.0
+  },
+  "event_avg_pkt_len_median": 1285.0,
+  "component_avg_pkt_len_median": 1465.0,
+  "cap_quantile": 0.99
+}
