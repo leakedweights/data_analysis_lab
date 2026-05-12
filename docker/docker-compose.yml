@@ -1,0 +1,44 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: api
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-cache:/app/models
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dashboard
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+      - redis
+    environment:
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  model-cache:

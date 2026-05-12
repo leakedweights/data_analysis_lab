@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Threat Monitor</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+/* === RESET & VARIABLES === */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0e17;--panel:#111827;--card:#1a2332;--border:#1e293b;
+  --cyan:#00d4ff;--green:#10b981;--amber:#f59e0b;--red:#ef4444;
+  --muted:#64748b;--text:#e2e8f0;--dim:#94a3b8;
+  --font:'JetBrains Mono','Fira Code','Cascadia Code',monospace;
+}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px}
+
+/* === LAYOUT === */
+body{display:flex}
+.sidebar{width:220px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:1rem;gap:0.8rem;flex-shrink:0;overflow-y:auto}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.feed-panel{width:250px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+
+/* === SIDEBAR === */
+.logo{color:var(--cyan);font-size:0.95rem;font-weight:700;letter-spacing:0.06em;padding-bottom:0.5rem;border-bottom:1px solid var(--border)}
+.logo small{display:block;color:var(--muted);font-size:0.65rem;font-weight:400;margin-top:2px;letter-spacing:0.02em}
+.sb-label{color:var(--muted);font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;margin-top:0.3rem}
+.sb-select{width:100%;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:0.45rem 0.5rem;font-family:var(--font);font-size:0.78rem;cursor:pointer}
+.sb-select:focus{outline:none;border-color:var(--cyan)}
+.sb-desc{color:var(--muted);font-size:0.65rem;line-height:1.4;min-height:2.4em}
+.btn-row{display:flex;gap:0.5rem}
+.btn{flex:1;padding:0.5rem;border:1px solid var(--border);border-radius:4px;font-family:var(--font);font-size:0.78rem;cursor:pointer;text-align:center;transition:all 0.15s}
+.btn-start{background:var(--cyan);color:#000;border-color:var(--cyan);font-weight:600}
+.btn-start:hover{background:#33dfff}
+.btn-stop{background:var(--card);color:var(--text)}
+.btn-stop:hover{background:#243044}
+.btn-clear{background:var(--card);color:var(--muted);font-size:0.7rem;border-color:var(--border)}
+.status-box{margin-top:auto;padding:0.6rem;background:var(--card);border-radius:6px;text-align:center}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.status-dot.live{background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 1.5s infinite}
+.status-dot.idle{background:var(--muted)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.conn-indicator{font-size:0.65rem;color:var(--muted);margin-top:0.3rem}
+
+/* === KPI ROW === */
+.kpi-row{display:flex;gap:0.5rem;padding:0.6rem 0.8rem;border-bottom:1px solid var(--border);flex-shrink:0}
+.kpi{flex:1;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:0.5rem 0.6rem;text-align:center;min-width:0}
+.kpi-label{color:var(--muted);font-size:0.6rem;text-transform:uppercase;letter-spacing:0.08em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi-value{font-size:1.35rem;font-weight:700;margin:0.15rem 0;transition:color 0.3s}
+.kpi-sub{color:var(--muted);font-size:0.6rem}
+.kpi-value.flash{animation:kpiFlash 0.4s ease}
+@keyframes kpiFlash{0%{transform:scale(1.08);color:#fff}100%{transform:scale(1)}}
+
+/* === CHARTS AREA === */
+.charts-scroll{flex:1;overflow-y:auto;padding:0.5rem 0.8rem}
+.chart-section{margin-bottom:0.6rem}
+.chart-title{color:var(--muted);font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;padding-bottom:0.3rem;border-bottom:1px solid var(--border);margin-bottom:0.3rem}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.bottom-row{display:flex;gap:0.5rem}
+.bottom-row>div:nth-child(1){flex:1.2;min-width:0}
+.bottom-row>div:nth-child(2){flex:1.3;min-width:220px}
+.bottom-row>div:nth-child(3){flex:1;min-width:0}
+
+/* === EVENT FEED === */
+.feed-header{padding:0.6rem 0.8rem;border-bottom:1px solid var(--border);color:var(--muted);font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;flex-shrink:0}
+.feed-scroll{flex:1;overflow-y:auto;padding:0.3rem 0.5rem}
+.feed-item{display:flex;align-items:center;gap:0.4rem;padding:0.25rem 0.4rem;border-radius:3px;margin-bottom:2px;font-size:0.72rem;animation:feedIn 0.3s ease-out}
+@keyframes feedIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+.feed-item.t-normal{background:rgba(16,185,129,0.06);border-left:2px solid var(--green)}
+.feed-item.t-suspicious{background:rgba(245,158,11,0.06);border-left:2px solid var(--amber)}
+.feed-item.t-ddos{background:rgba(239,68,68,0.06);border-left:2px solid var(--red)}
+.feed-tag{padding:1px 5px;border-radius:2px;font-size:0.62rem;font-weight:700;flex-shrink:0}
+.feed-tag.t-normal{background:var(--green);color:#000}
+.feed-tag.t-suspicious{background:var(--amber);color:#000}
+.feed-tag.t-ddos{background:var(--red);color:#fff}
+.feed-port{color:var(--muted)}
+.feed-pps{color:var(--dim);flex:1;text-align:right;white-space:nowrap}
+.feed-ok{color:var(--green)}
+.feed-bad{color:var(--red)}
+
+/* === ALERTS === */
+.alert-scroll{max-height:240px;overflow-y:auto}
+.alert-item{padding:0.35rem 0.5rem;border-radius:4px;margin-bottom:3px;font-size:0.7rem;animation:alertIn 0.35s ease-out;border-left:3px solid}
+@keyframes alertIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:translateX(0)}}
+.alert-item.true{background:rgba(16,185,129,0.08);border-color:var(--green)}
+.alert-item.false{background:rgba(239,68,68,0.08);border-color:var(--red)}
+.alert-label{font-weight:700}
+
+/* === LOADING OVERLAY === */
+#loading{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:1000;transition:opacity 0.5s}
+#loading.hidden{opacity:0;pointer-events:none}
+.loader{text-align:center}
+.spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--cyan);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 1rem}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loader h2{font-size:1rem;color:var(--cyan);margin-bottom:0.3rem}
+.loader p{color:var(--muted);font-size:0.8rem}
+
+/* === EMPTY STATE === */
+.empty-state{display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);text-align:center;padding:2rem}
+.empty-state .icon{font-size:2.5rem;margin-bottom:0.5rem}
+.empty-state p{font-size:0.85rem;max-width:300px}
+</style>
+</head>
+<body>
+
+<!-- LOADING OVERLAY -->
+<div id="loading">
+  <div class="loader">
+    <div class="spinner"></div>
+    <h2>NETWORK THREAT MONITOR</h2>
+    <p id="loading-msg">Connecting to API...</p>
+  </div>
+</div>
+
+<!-- SIDEBAR -->
+<nav class="sidebar">
+  <div class="logo">THREAT MONITOR<small>Real-time DDoS Detection</small></div>
+
+  <div class="sb-label">Model</div>
+  <select id="model-select" class="sb-select"></select>
+
+  <div class="sb-label">Attack Scenario</div>
+  <select id="scenario-select" class="sb-select"></select>
+  <div class="sb-desc" id="scenario-desc"></div>
+
+  <div class="btn-row">
+    <button class="btn btn-start" id="btn-start">Start</button>
+    <button class="btn btn-stop" id="btn-stop">Stop</button>
+  </div>
+  <button class="btn btn-clear" id="btn-clear">Clear Data</button>
+
+  <div class="status-box">
+    <span class="status-dot idle" id="status-dot"></span>
+    <span id="status-label">IDLE</span>
+    <div class="conn-indicator" id="conn-indicator">SSE: disconnected</div>
+  </div>
+</nav>
+
+<!-- MAIN CONTENT -->
+<div class="main">
+  <!-- KPIs -->
+  <div class="kpi-row">
+    <div class="kpi"><div class="kpi-label">Threat Level</div><div class="kpi-value" id="kpi-threat" style="color:var(--green)">NORMAL</div><div class="kpi-sub" id="kpi-threat-sub">&nbsp;</div></div>
+    <div class="kpi"><div class="kpi-label">Events</div><div class="kpi-value" id="kpi-events" style="color:var(--cyan)">0</div><div class="kpi-sub" id="kpi-events-sub">0 windows</div></div>
+    <div class="kpi"><div class="kpi-label">DDoS Detected</div><div class="kpi-value" id="kpi-ddos" style="color:var(--green)">0</div><div class="kpi-sub" id="kpi-ddos-sub">0% of traffic</div></div>
+    <div class="kpi"><div class="kpi-label">Accuracy</div><div class="kpi-value" id="kpi-acc" style="color:var(--green)">--</div><div class="kpi-sub" id="kpi-acc-sub">&nbsp;</div></div>
+    <div class="kpi"><div class="kpi-label">Latency</div><div class="kpi-value" id="kpi-lat" style="color:var(--green)">--</div><div class="kpi-sub" id="kpi-lat-sub">&nbsp;</div></div>
+    <div class="kpi"><div class="kpi-label">Alerts</div><div class="kpi-value" id="kpi-alerts" style="color:var(--green)">0</div><div class="kpi-sub" id="kpi-alerts-sub">&nbsp;</div></div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-scroll" id="charts-area">
+    <div class="empty-state" id="empty-state">
+      <div><div class="icon">&#x1f6e1;</div><p>Select a model and attack scenario, then click <b>Start</b> to begin real-time detection.</p></div>
+    </div>
+    <div id="charts-container" style="display:none">
+      <div class="chart-section"><div class="chart-title">Live Traffic Flow &mdash; Predicted Classification</div><div class="chart-box"><div id="chart-traffic"></div></div></div>
+      <div class="chart-section"><div class="chart-title">Ground Truth vs Model Predictions</div><div class="chart-box"><div id="chart-comparison"></div></div></div>
+      <div class="chart-section bottom-row">
+        <div><div class="chart-title">Accuracy &amp; Latency</div><div class="chart-box"><div id="chart-accuracy"></div><div id="chart-latency"></div></div></div>
+        <div><div class="chart-title">Confusion Matrix</div><div class="chart-box"><div id="chart-confusion"></div></div></div>
+        <div><div class="chart-title">Alert Log</div><div class="chart-box" style="padding:0.4rem"><div class="alert-scroll" id="alert-log"></div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- EVENT FEED -->
+<aside class="feed-panel">
+  <div class="feed-header">Live Event Feed</div>
+  <div class="feed-scroll" id="event-feed"></div>
+</aside>
+
+<script>
+/* ====================================================================
+   STATE
+   ==================================================================== */
+const MAX_VIS = 60;
+const S = {
+  idx: [], predN: [], predS: [], predD: [],
+  actN: [], actS: [], actD: [],
+  acc: [], lat: [], pktRate: [],
+  confusion: [[0,0,0],[0,0,0],[0,0,0]],
+  alertWindows: [],   // {windowIndex, total}
+  alerts: [],         // {type, window, predDDoS, actDDoS, accuracy}
+  totalEv: 0, totalDDoS: 0, totalCorrect: 0,
+  alertCount: 0, falseAlerts: 0,
+  running: false,
+};
+let scenarios = {};
+let sse = null;
+
+/* ====================================================================
+   COLORS & PLOTLY BASE
+   ==================================================================== */
+const C = {bg:'rgba(0,0,0,0)',green:'#10b981',amber:'#f59e0b',red:'#ef4444',cyan:'#00d4ff',muted:'#64748b',text:'#e2e8f0',grid:'#1e293b',purple:'#818cf8'};
+const PCFG = {displayModeBar:false, responsive:true};
+function baseLayout(h, extra={}){
+  const L = {paper_bgcolor:C.bg,plot_bgcolor:C.bg,font:{color:C.text,family:'JetBrains Mono,monospace',size:11},margin:{l:48,r:12,t:8,b:32},height:h,
+    xaxis:{gridcolor:C.grid,zerolinecolor:C.grid,...(extra.xaxis||{})},
+    yaxis:{gridcolor:C.grid,zerolinecolor:C.grid,...(extra.yaxis||{})},
+    legend:{orientation:'h',y:1.15,font:{size:10},...(extra.legend||{})}};
+  delete extra.xaxis; delete extra.yaxis; delete extra.legend;
+  return {...L,...extra};
+}
+
+/* ====================================================================
+   API HELPERS
+   ==================================================================== */
+const api = (path,opts) => fetch(path,opts).then(r=>{if(!r.ok)throw r;return r.json()}).catch(()=>null);
+
+/* ====================================================================
+   CHART INIT
+   ==================================================================== */
+function initCharts(){
+  // Traffic
+  Plotly.newPlot('chart-traffic',[
+    {x:[],y:[],type:'scatter',mode:'lines',name:'Normal',stackgroup:'p',line:{color:C.green,width:1},fillcolor:'rgba(16,185,129,0.25)'},
+    {x:[],y:[],type:'scatter',mode:'lines',name:'Suspicious',stackgroup:'p',line:{color:C.amber,width:1},fillcolor:'rgba(245,158,11,0.25)'},
+    {x:[],y:[],type:'scatter',mode:'lines',name:'DDoS',stackgroup:'p',line:{color:C.red,width:2},fillcolor:'rgba(239,68,68,0.3)'},
+    {x:[],y:[],type:'scatter',mode:'markers',name:'Alert',marker:{symbol:'triangle-down',size:11,color:C.red,line:{width:1,color:'#fff'}}},
+  ], baseLayout(260,{xaxis:{title:'Window'}, yaxis:{title:'Events'}}), PCFG);
+
+  // Comparison
+  Plotly.newPlot('chart-comparison',[
+    {x:[],y:[],mode:'lines',name:'Actual DDoS',line:{color:'#f87171',width:2,dash:'dot'}},
+    {x:[],y:[],mode:'lines',name:'Predicted DDoS',line:{color:C.red,width:2}},
+    {x:[],y:[],mode:'lines',name:'Actual Normal',line:{color:'#6ee7b7',width:1,dash:'dot'}},
+    {x:[],y:[],mode:'lines',name:'Predicted Normal',line:{color:C.green,width:1}},
+  ], baseLayout(220,{xaxis:{title:'Window'}, yaxis:{title:'Events'}}), PCFG);
+
+  // Accuracy
+  Plotly.newPlot('chart-accuracy',[
+    {x:[],y:[],mode:'lines',name:'Accuracy',line:{color:C.cyan,width:2},fill:'tozeroy',fillcolor:'rgba(0,212,255,0.06)'},
+    {x:[],y:[],mode:'lines',name:'Rolling Avg',line:{color:C.purple,width:2,dash:'dash'}},
+  ], baseLayout(180,{xaxis:{title:'Window'}, yaxis:{title:'Accuracy',range:[0,1.05]}}), PCFG);
+
+  // Latency
+  Plotly.newPlot('chart-latency',[
+    {x:[],y:[],type:'bar',name:'Latency',marker:{color:[]}},
+  ], baseLayout(140,{xaxis:{title:'Window'}, yaxis:{title:'ms'}}), PCFG);
+
+  // Confusion
+  Plotly.newPlot('chart-confusion',[{
+    z:[[0,0,0],[0,0,0],[0,0,0]], x:['Normal','Susp.','DDoS'], y:['Normal','Susp.','DDoS'],
+    type:'heatmap', colorscale:[[0,'#111827'],[0.5,'#1e40af'],[1,C.red]], showscale:false,
+    text:[['0','0','0'],['0','0','0'],['0','0','0']], texttemplate:'%{text}', textfont:{size:13,color:'#fff'},
+  }], baseLayout(260,{margin:{l:55,r:10,t:10,b:40}, xaxis:{title:'Predicted',side:'bottom'}, yaxis:{title:'Actual',autorange:'reversed'}}), PCFG);
+}
+
+/* ====================================================================
+   CHART UPDATES  — Plotly.react() for smooth in-place diffing
+   ==================================================================== */
+function vis(arr){ const s=Math.max(0,arr.length-MAX_VIS); return arr.slice(s); }
+
+function updateTrafficChart(){
+  const vIdx=vis(S.idx), vN=vis(S.predN), vS=vis(S.predS), vD=vis(S.predD);
+  // Alert markers within visible range
+  const s=Math.max(0,S.idx.length-MAX_VIS);
+  const aX=[],aY=[];
+  S.alertWindows.forEach(a=>{const i=S.idx.indexOf(a.windowIndex);if(i>=s){aX.push(a.windowIndex);aY.push(a.total)}});
+  Plotly.react('chart-traffic',[
+    {x:vIdx,y:vN,type:'scatter',mode:'lines',name:'Normal',stackgroup:'p',line:{color:C.green,width:1},fillcolor:'rgba(16,185,129,0.25)'},
+    {x:vIdx,y:vS,type:'scatter',mode:'lines',name:'Suspicious',stackgroup:'p',line:{color:C.amber,width:1},fillcolor:'rgba(245,158,11,0.25)'},
+    {x:vIdx,y:vD,type:'scatter',mode:'lines',name:'DDoS',stackgroup:'p',line:{color:C.red,width:2},fillcolor:'rgba(239,68,68,0.3)'},
+    {x:aX,y:aY,type:'scatter',mode:'markers',name:'Alert',marker:{symbol:'triangle-down',size:11,color:C.red,line:{width:1,color:'#fff'}}},
+  ], baseLayout(260,{xaxis:{title:'Window'},yaxis:{title:'Events'}}), PCFG);
+}
+
+function updateComparisonChart(){
+  const vIdx=vis(S.idx);
+  Plotly.react('chart-comparison',[
+    {x:vIdx,y:vis(S.actD),mode:'lines',name:'Actual DDoS',line:{color:'#f87171',width:2,dash:'dot'}},
+    {x:vIdx,y:vis(S.predD),mode:'lines',name:'Predicted DDoS',line:{color:C.red,width:2}},
+    {x:vIdx,y:vis(S.actN),mode:'lines',name:'Actual Normal',line:{color:'#6ee7b7',width:1,dash:'dot'}},
+    {x:vIdx,y:vis(S.predN),mode:'lines',name:'Predicted Normal',line:{color:C.green,width:1}},
+  ], baseLayout(220,{xaxis:{title:'Window'},yaxis:{title:'Events'}}), PCFG);
+}
+
+function updateAccuracyChart(){
+  const vIdx=vis(S.idx), vAcc=vis(S.acc);
+  // Rolling average
+  const rIdx=[],rVal=[];
+  const allAcc=S.acc;
+  for(let i=4;i<allAcc.length;i++){
+    const avg=(allAcc[i]+allAcc[i-1]+allAcc[i-2]+allAcc[i-3]+allAcc[i-4])/5;
+    if(S.idx[i]>=vIdx[0]){rIdx.push(S.idx[i]);rVal.push(avg)}
+  }
+  Plotly.react('chart-accuracy',[
+    {x:vIdx,y:vAcc,mode:'lines',name:'Accuracy',line:{color:C.cyan,width:2},fill:'tozeroy',fillcolor:'rgba(0,212,255,0.06)'},
+    {x:rIdx,y:rVal,mode:'lines',name:'Rolling Avg',line:{color:C.purple,width:2,dash:'dash'}},
+  ], baseLayout(180,{xaxis:{title:'Window'},yaxis:{title:'Accuracy',range:[0,1.05]}}), PCFG);
+}
+
+function updateLatencyChart(){
+  const vIdx=vis(S.idx), vLat=vis(S.lat);
+  const colors=vLat.map(v=>v<3?C.green:v<15?C.amber:C.red);
+  Plotly.react('chart-latency',[
+    {x:vIdx,y:vLat,type:'bar',name:'Latency',marker:{color:colors}},
+  ], baseLayout(140,{xaxis:{title:'Window'},yaxis:{title:'ms'}}), PCFG);
+}
+
+function updateConfusionChart(){
+  const cm=S.confusion;
+  const txt=cm.map(r=>r.map(v=>String(v)));
+  Plotly.react('chart-confusion',[{
+    z:cm, x:['Normal','Susp.','DDoS'], y:['Normal','Susp.','DDoS'],
+    type:'heatmap', colorscale:[[0,'#111827'],[0.5,'#1e40af'],[1,C.red]], showscale:false,
+    text:txt, texttemplate:'%{text}', textfont:{size:13,color:'#fff'},
+  }], baseLayout(260,{margin:{l:55,r:10,t:10,b:40}, xaxis:{title:'Predicted',side:'bottom'},yaxis:{title:'Actual',autorange:'reversed'}}), PCFG);
+}
+
+/* ====================================================================
+   KPI UPDATES
+   ==================================================================== */
+function flashKpi(el){ el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+
+function updateKPIs(w){
+  const kpiThreat=document.getElementById('kpi-threat');
+  const lastDDoS=w.n_predicted_ddos;
+  let lvl='NORMAL',col=C.green;
+  if(lastDDoS>5){lvl='CRITICAL';col=C.red}else if(lastDDoS>2){lvl='HIGH';col=C.red}else if(lastDDoS>0){lvl='ELEVATED';col=C.amber}
+  kpiThreat.textContent=lvl; kpiThreat.style.color=col; flashKpi(kpiThreat);
+
+  const eEl=document.getElementById('kpi-events');
+  eEl.textContent=S.totalEv.toLocaleString(); flashKpi(eEl);
+  document.getElementById('kpi-events-sub').textContent=S.idx.length+' windows';
+
+  const dEl=document.getElementById('kpi-ddos');
+  dEl.textContent=S.totalDDoS.toLocaleString();
+  dEl.style.color=S.totalDDoS>0?C.red:C.green; flashKpi(dEl);
+  const pct=S.totalEv>0?(S.totalDDoS/S.totalEv*100).toFixed(1):'0';
+  document.getElementById('kpi-ddos-sub').textContent=pct+'% of traffic';
+
+  const aEl=document.getElementById('kpi-acc');
+  const overallAcc=S.totalEv>0?S.totalCorrect/S.totalEv:0;
+  aEl.textContent=(overallAcc*100).toFixed(1)+'%';
+  aEl.style.color=overallAcc>0.9?C.green:overallAcc>0.7?C.amber:C.red; flashKpi(aEl);
+  document.getElementById('kpi-acc-sub').textContent=document.getElementById('model-select').value;
+
+  const lEl=document.getElementById('kpi-lat');
+  const avgLat=S.lat.length>0?S.lat.reduce((a,b)=>a+b,0)/S.lat.length:0;
+  lEl.textContent=avgLat.toFixed(1)+'ms';
+  lEl.style.color=avgLat<5?C.green:avgLat<20?C.amber:C.red; flashKpi(lEl);
+
+  const alEl=document.getElementById('kpi-alerts');
+  alEl.textContent=S.alertCount;
+  alEl.style.color=S.falseAlerts>0?C.red:S.alertCount>0?C.amber:C.green; flashKpi(alEl);
+  document.getElementById('kpi-alerts-sub').textContent=S.falseAlerts>0?S.falseAlerts+' false':'all verified';
+}
+
+/* ====================================================================
+   EVENT FEED
+   ==================================================================== */
+function addFeedItems(samples){
+  const feed=document.getElementById('event-feed');
+  samples.forEach(s=>{
+    const cls=s.predicted.includes('Normal')?'normal':s.predicted.includes('DDoS')?'ddos':'suspicious';
+    const tag=cls==='normal'?'NOR':cls==='ddos'?'DDO':'SUS';
+    const ok=s.correct?'<span class="feed-ok">&#10003;</span>':'<span class="feed-bad">&#10007;</span>';
+    const el=document.createElement('div');
+    el.className='feed-item t-'+cls;
+    el.innerHTML=`<span class="feed-tag t-${cls}">${tag}</span><span class="feed-port">:${s.port}</span><span class="feed-pps">${Number(s.pkt_speed).toLocaleString()} pps</span>${ok}`;
+    feed.prepend(el);
+  });
+  // Keep max 80 items
+  while(feed.children.length>80) feed.removeChild(feed.lastChild);
+}
+
+/* ====================================================================
+   ALERT LOG
+   ==================================================================== */
+function addAlert(a){
+  const log=document.getElementById('alert-log');
+  const isTrue=a.type==='TRUE';
+  const el=document.createElement('div');
+  el.className='alert-item '+(isTrue?'true':'false');
+  const icon=isTrue?'&#x2705;':'&#x26a0;&#xfe0f;';
+  const label=isTrue?'VERIFIED':'FALSE POS';
+  el.innerHTML=`${icon} <span class="alert-label">${label}</span> W${a.window} &mdash; pred:${a.predDDoS} actual:${a.actDDoS} acc:${(a.accuracy*100).toFixed(0)}%`;
+  log.prepend(el);
+  while(log.children.length>30) log.removeChild(log.lastChild);
+}
+
+/* ====================================================================
+   HANDLE WINDOW EVENT (from SSE)
+   ==================================================================== */
+function handleWindow(w){
+  // Show charts on first data
+  if(S.idx.length===0){
+    document.getElementById('empty-state').style.display='none';
+    document.getElementById('charts-container').style.display='block';
+  }
+
+  // Accumulate state
+  S.idx.push(w.window_index);
+  S.predN.push(w.n_predicted_normal);
+  S.predS.push(w.n_predicted_suspicious);
+  S.predD.push(w.n_predicted_ddos);
+  S.actN.push(w.n_actual_normal);
+  S.actS.push(w.n_actual_suspicious);
+  S.actD.push(w.n_actual_ddos);
+  S.acc.push(w.accuracy);
+  S.lat.push(w.detection_latency_ms);
+  S.pktRate.push(w.avg_pkt_rate||0);
+  S.totalEv += w.n_events;
+  S.totalDDoS += w.n_actual_ddos;
+  S.totalCorrect += Math.round(w.accuracy * w.n_events);
+
+  // Confusion matrix
+  if(w.confusion){
+    for(let i=0;i<3;i++) for(let j=0;j<3;j++) S.confusion[i][j]+=w.confusion[i][j];
+  }
+
+  // Alerts
+  if(w.alert_raised){
+    const total=w.n_predicted_normal+w.n_predicted_suspicious+w.n_predicted_ddos;
+    S.alertWindows.push({windowIndex:w.window_index, total});
+    S.alertCount++;
+    const type=w.n_actual_ddos>0?'TRUE':'FALSE';
+    if(type==='FALSE') S.falseAlerts++;
+    const alert={type,window:w.window_index,predDDoS:w.n_predicted_ddos,actDDoS:w.n_actual_ddos,accuracy:w.accuracy};
+    S.alerts.push(alert);
+    addAlert(alert);
+  }
+
+  // Feed
+  if(w.event_samples) addFeedItems(w.event_samples);
+
+  // Update all visuals
+  updateKPIs(w);
+  updateTrafficChart();
+  updateComparisonChart();
+  updateAccuracyChart();
+  updateLatencyChart();
+  updateConfusionChart();
+}
+
+/* ====================================================================
+   SSE CONNECTION
+   ==================================================================== */
+function connectSSE(){
+  if(sse) sse.close();
+  sse=new EventSource('/api/simulation/stream');
+  const ind=document.getElementById('conn-indicator');
+  sse.onopen=()=>{ind.textContent='SSE: connected'; ind.style.color=C.green};
+  sse.onerror=()=>{ind.textContent='SSE: reconnecting...'; ind.style.color=C.amber};
+  sse.onmessage=e=>{
+    try{
+      const d=JSON.parse(e.data);
+      if(d.done){
+        setRunning(false);
+        return;
+      }
+      handleWindow(d);
+    }catch(err){}
+  };
+}
+
+/* ====================================================================
+   STATUS
+   ==================================================================== */
+function setRunning(r){
+  S.running=r;
+  const dot=document.getElementById('status-dot');
+  const lbl=document.getElementById('status-label');
+  dot.className='status-dot '+(r?'live':'idle');
+  lbl.textContent=r?'LIVE':'IDLE';
+}
+
+/* ====================================================================
+   RESET STATE
+   ==================================================================== */
+function resetState(){
+  S.idx.length=0;S.predN.length=0;S.predS.length=0;S.predD.length=0;
+  S.actN.length=0;S.actS.length=0;S.actD.length=0;
+  S.acc.length=0;S.lat.length=0;S.pktRate.length=0;
+  S.confusion=[[0,0,0],[0,0,0],[0,0,0]];
+  S.alertWindows.length=0;S.alerts.length=0;
+  S.totalEv=0;S.totalDDoS=0;S.totalCorrect=0;S.alertCount=0;S.falseAlerts=0;
+  document.getElementById('event-feed').innerHTML='';
+  document.getElementById('alert-log').innerHTML='';
+  document.getElementById('empty-state').style.display='flex';
+  document.getElementById('charts-container').style.display='none';
+  // Reset KPIs
+  ['kpi-threat','kpi-events','kpi-ddos','kpi-acc','kpi-lat','kpi-alerts'].forEach(id=>{
+    const el=document.getElementById(id);
+    el.textContent=id==='kpi-threat'?'NORMAL':id==='kpi-acc'||id==='kpi-lat'?'--':'0';
+    el.style.color=C.green;
+  });
+}
+
+/* ====================================================================
+   INIT
+   ==================================================================== */
+async function init(){
+  const loadEl=document.getElementById('loading');
+  const msgEl=document.getElementById('loading-msg');
+
+  // Wait for API
+  while(true){
+    const h=await api('/api/health');
+    if(h && h.status==='ready') break;
+    msgEl.textContent=h?'Training ML models... (~30s)':'Waiting for API...';
+    await new Promise(r=>setTimeout(r,2000));
+  }
+  msgEl.textContent='Loading models...';
+
+  // Load models
+  const mResp=await api('/api/models');
+  const sel=document.getElementById('model-select');
+  if(mResp){
+    mResp.models.forEach(m=>{
+      const o=document.createElement('option');
+      o.value=m.name;o.textContent=m.name;
+      if(m.is_active) o.selected=true;
+      sel.appendChild(o);
+    });
+  }
+
+  // Load scenarios
+  const sResp=await api('/api/scenarios');
+  const sSel=document.getElementById('scenario-select');
+  const descEl=document.getElementById('scenario-desc');
+  if(sResp){
+    sResp.scenarios.forEach(s=>{
+      scenarios[s.id]=s;
+      const o=document.createElement('option');
+      o.value=s.id;o.textContent=s.name;
+      sSel.appendChild(o);
+    });
+    sSel.addEventListener('change',()=>{
+      const sc=scenarios[sSel.value];
+      descEl.textContent=sc?sc.description:'';
+    });
+    sSel.dispatchEvent(new Event('change'));
+  }
+
+  // Model change
+  sel.addEventListener('change',()=>{
+    api('/api/models/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:sel.value})});
+  });
+
+  // Buttons
+  document.getElementById('btn-start').addEventListener('click',async()=>{
+    resetState();
+    const scenarioId=sSel.value;
+    await api('/api/simulation/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:scenarioId})});
+    setRunning(true);
+  });
+  document.getElementById('btn-stop').addEventListener('click',async()=>{
+    await api('/api/simulation/stop',{method:'POST'});
+    setRunning(false);
+  });
+  document.getElementById('btn-clear').addEventListener('click',()=>{ resetState(); });
+
+  // Init charts
+  initCharts();
+
+  // Connect SSE (always on — receives data when simulation runs)
+  connectSSE();
+
+  // Check if already running
+  const status=await api('/api/simulation/status');
+  if(status && status.running) setRunning(true);
+
+  // Hide loading
+  loadEl.classList.add('hidden');
+  setTimeout(()=>loadEl.remove(),600);
+}
+
+document.addEventListener('DOMContentLoaded',init);
+</script>
+</body>
+</html>

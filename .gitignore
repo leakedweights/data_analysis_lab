@@ -4,6 +4,9 @@ data/raw/
 data/*.csv
 !data/parquet/
 plots/png/
+results/figures/pdf
+results/figures/png
+results/*.csv
 
 # Python-generated files
 __pycache__/
@@ -15,3 +18,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+*.txt
+
+.claude
