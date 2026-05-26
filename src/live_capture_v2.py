@@ -43,7 +43,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 import numpy as np
 import pandas as pd
@@ -329,6 +329,105 @@ class LiveTrafficGeneratorV2:
             sniffer.stop()
 
         return self._to_dataframes(windows, base_wall, t0)
+
+    def stream_scenario(
+        self, scenario: LiveScenario, stop_event: threading.Event | None = None,
+    ) -> Iterator[tuple[pd.DataFrame, pd.DataFrame]]:
+        """Yield ``(events_df, components_df)`` per closed window as the
+        scenario runs. Same window construction as :meth:`run_scenario`;
+        the only difference is the per-window flush so the dashboard can
+        render results progressively instead of waiting for the whole
+        scenario.
+
+        Pass ``stop_event`` to abort mid-scenario from another thread —
+        each window is checked before the next phase starts and after
+        each sample.
+        """
+        sniffer = SourceIPSniffer(self.interface, window_s=self.window_s)
+        sniffer.start()
+
+        sorted_phases = sorted(scenario.phases, key=lambda p: p.start_offset_s)
+        attack_id = 0
+        base_wall = pd.Timestamp.now()
+        t0 = time.monotonic()
+
+        def _aborted() -> bool:
+            return stop_event is not None and stop_event.is_set()
+
+        try:
+            for phase in sorted_phases:
+                if _aborted():
+                    break
+                spec = HPING_ATTACKS[phase.attack_name]
+                while time.monotonic() - t0 < phase.start_offset_s:
+                    if _aborted():
+                        return
+                    time.sleep(0.01)
+
+                proc = self._start_hping(spec)
+                phase_end = phase.start_offset_s + phase.duration_s
+
+                window_idx = 0
+                while True:
+                    if _aborted():
+                        self._stop_hping(proc)
+                        return
+                    win_start_offset = phase.start_offset_s + window_idx * self.window_s
+                    win_end_offset = min(win_start_offset + self.window_s, phase_end)
+                    if win_start_offset >= phase_end:
+                        break
+                    if win_end_offset - win_start_offset < self.sample_s * 2:
+                        break
+
+                    win_start_mono = t0 + win_start_offset
+                    win_end_mono = t0 + win_end_offset
+
+                    attack_id += 1
+                    window = CapturedWindow(
+                        attack_id=attack_id,
+                        label=spec.traffic_type,
+                        port=spec.port,
+                        start_t=win_start_mono,
+                        end_t=win_end_mono,
+                        spec_name=spec.name,
+                    )
+
+                    prev_pkts, prev_bytes = _read_counters(self.interface)
+                    prev_t = time.monotonic()
+
+                    while True:
+                        if _aborted():
+                            self._stop_hping(proc)
+                            return
+                        now = time.monotonic()
+                        if now >= win_end_mono:
+                            break
+                        sleep_s = min(self.sample_s, win_end_mono - now)
+                        time.sleep(max(0.0, sleep_s))
+                        now = time.monotonic()
+                        cur_pkts, cur_bytes = _read_counters(self.interface)
+                        d_pkts = max(0, cur_pkts - prev_pkts)
+                        d_bytes = max(0, cur_bytes - prev_bytes)
+                        dt = max(0.001, now - prev_t)
+                        if d_pkts > 0:
+                            window.samples.append(CapturedSample(
+                                t=now,
+                                pps=d_pkts / dt,
+                                bps=d_bytes / dt,
+                                avg_pkt_len=d_bytes / d_pkts,
+                            ))
+                        prev_pkts, prev_bytes = cur_pkts, cur_bytes
+                        prev_t = now
+
+                    window.distinct_src_ips = sniffer.distinct_in_range(
+                        win_start_mono, win_end_mono,
+                    )
+                    yield self._to_dataframes([window], base_wall, t0)
+                    window_idx += 1
+
+                self._stop_hping(proc)
+        finally:
+            sniffer.stop()
 
     # -- conversion to v2-shaped DataFrames -------------------------------
 

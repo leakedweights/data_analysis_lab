@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import queue
 import threading
 import time
 from dataclasses import dataclass
@@ -13,8 +14,9 @@ import numpy as np
 import pandas as pd
 import redis.asyncio as aioredis
 
-from src.api.model_registry import FEATURE_COLS, ModelRegistry
-from src.live_capture import LIVE_SCENARIOS, LiveTrafficGenerator, hping3_available
+from src.api.model_registry import ModelRegistry
+from src.live_capture import LIVE_SCENARIOS, hping3_available
+from src.live_capture_v2 import LiveTrafficGeneratorV2
 from src.simulator import TYPE_TO_INT, INT_TO_TYPE
 from src.synthetic import TrafficGenerator
 
@@ -263,9 +265,9 @@ class StreamEngine:
         gen = TrafficGenerator(seed=int(time.time()) % 10000)
 
         if scenario_id == "escalating":
-            stream = self._generate_escalating(gen, scenario)
+            events = self._generate_escalating(gen, scenario)
         else:
-            stream = gen.generate_stream(
+            events = gen.generate_stream(
                 duration_seconds=scenario.duration_seconds,
                 events_per_second=scenario.events_per_second,
                 ddos_ratio=scenario.ddos_ratio,
@@ -276,7 +278,12 @@ class StreamEngine:
                 burst_ddos_ratio=scenario.burst_ddos_ratio,
             )
 
-        await self._process_windows(stream, scenario, redis, source="synthetic")
+        # v2 featurizer needs both events and components. Build the
+        # component frame once up front; per-window slicing happens via
+        # Attack ID inside _process_windows.
+        components = gen.generate_components(events)
+
+        await self._process_windows(events, components, scenario, redis, source="synthetic")
 
     def _generate_escalating(
         self, gen: TrafficGenerator, scenario: ScenarioDef,
@@ -309,13 +316,14 @@ class StreamEngine:
 
     async def _process_windows(
         self,
-        stream: pd.DataFrame,
+        events: pd.DataFrame,
+        components: pd.DataFrame,
         scenario: ScenarioDef,
         redis: aioredis.Redis,
         source: str = "synthetic",
     ) -> None:
-        t_start = stream["Start time"].min()
-        t_end = stream["Start time"].max()
+        t_start = events["Start time"].min()
+        t_end = events["Start time"].max()
         window_delta = pd.Timedelta(seconds=5.0)
 
         current = t_start
@@ -323,15 +331,19 @@ class StreamEngine:
 
         while current < t_end and self._running:
             w_end = current + window_delta
-            mask = (stream["Start time"] >= current) & (stream["Start time"] < w_end)
-            window_events = stream[mask]
+            mask = (events["Start time"] >= current) & (events["Start time"] < w_end)
+            window_events = events[mask]
 
             if len(window_events) == 0:
                 current = w_end
                 continue
 
+            window_components = components[
+                components["Attack ID"].isin(window_events["Attack ID"])
+            ]
+
             await self._process_and_publish_window(
-                window_events, window_idx, current, w_end,
+                window_events, window_components, window_idx, current, w_end,
                 scenario.id, redis, source,
             )
 
@@ -347,46 +359,54 @@ class StreamEngine:
         self, scenario_id: str, scenario: ScenarioDef, redis: aioredis.Redis,
     ) -> None:
         live_scenario = LIVE_SCENARIOS[scenario_id]
-        gen = LiveTrafficGenerator(seed=int(time.time()) % 10000)
+        gen = LiveTrafficGeneratorV2()
 
-        # Run hping3 generation in a background thread
-        gen_thread = threading.Thread(
-            target=gen.generate_stream_live,
-            args=(live_scenario,),
-            daemon=True,
-        )
+        # The v2 generator yields one (events_df, components_df) tuple
+        # per closed window. We push each tuple onto a thread-safe queue
+        # and consume them from the asyncio loop.
+        q: queue.Queue = queue.Queue(maxsize=8)
+        stop_event = threading.Event()
+        SENTINEL = object()
+
+        def _produce() -> None:
+            try:
+                for ev_df, comp_df in gen.stream_scenario(live_scenario, stop_event):
+                    q.put((ev_df, comp_df))
+            except Exception:
+                logger.exception("live capture failed")
+            finally:
+                q.put(SENTINEL)
+
+        gen_thread = threading.Thread(target=_produce, daemon=True)
         gen_thread.start()
 
         window_idx = 0
-        window_size_s = 5.0
-
         try:
             while self._running:
-                # Wait for one window of real time
-                await asyncio.sleep(window_size_s)
-
-                raw_events = gen.pop_events()
-                if not raw_events:
+                try:
+                    item = await asyncio.get_event_loop().run_in_executor(
+                        None, q.get, True, 1.0,
+                    )
+                except queue.Empty:
                     if not gen_thread.is_alive():
                         break
                     continue
+                if item is SENTINEL:
+                    break
 
-                # Convert to DataFrame matching the synthetic schema
-                df = pd.DataFrame(raw_events)
-                for col in ("Card", "Victim IP", "Attack code", "Type"):
-                    if col in df.columns:
-                        df[col] = df[col].astype("category")
-
-                now = pd.Timestamp.now()
+                ev_df, comp_df = item
+                if len(ev_df) == 0:
+                    continue
+                window_start = ev_df["Start time"].iloc[0]
+                window_end = ev_df["End time"].iloc[-1]
                 await self._process_and_publish_window(
-                    df, window_idx,
-                    now - pd.Timedelta(seconds=window_size_s), now,
+                    ev_df, comp_df, window_idx,
+                    window_start, window_end,
                     scenario_id, redis, source="hping3",
                 )
                 window_idx += 1
-
         finally:
-            gen.stop()
+            stop_event.set()
             gen_thread.join(timeout=5)
 
     # -----------------------------------------------------------------------
@@ -396,6 +416,7 @@ class StreamEngine:
     async def _process_and_publish_window(
         self,
         window_events: pd.DataFrame,
+        window_components: pd.DataFrame,
         window_idx: int,
         window_start: pd.Timestamp,
         window_end: pd.Timestamp,
@@ -404,9 +425,8 @@ class StreamEngine:
         source: str = "synthetic",
     ) -> None:
         """Run model prediction on one window and publish results to Redis."""
-        model = self._registry.current_model
         model_name = self._registry.current_name or "unknown"
-        if model is None:
+        if self._registry.current_model is None:
             logger.error("No model selected")
             return
 
@@ -414,17 +434,13 @@ class StreamEngine:
         normal_label = TYPE_TO_INT["Normal traffic"]
         suspicious_label = TYPE_TO_INT["Suspicious traffic"]
 
-        # Prepare features
-        X = window_events[FEATURE_COLS].copy()
-        for col in X.columns:
-            if X[col].dtype.name == "category":
-                X[col] = X[col].cat.codes
-        X_arr = X.values
+        # v2+cluster featurization: one row per event in the window.
+        X_aug = self._registry.featurize_window(window_events, window_components)
 
-        y_true = window_events["Type"].map(TYPE_TO_INT).values
+        y_true = window_events["Type"].astype(str).map(TYPE_TO_INT).values
 
         t0 = time.perf_counter()
-        y_pred = model.predict(X_arr)
+        y_pred = self._registry.predict(X_aug)
         latency_ms = (time.perf_counter() - t0) * 1000
 
         n_pred_ddos = int((y_pred == ddos_label).sum())
@@ -443,7 +459,15 @@ class StreamEngine:
 
         # Traffic stats
         pkt_speeds = window_events["Packet speed"].values
-        data_speeds = window_events["Data speed"].values
+        # Live-v2 capture omits Data speed (bps) from the events schema;
+        # estimate from packet speed * avg packet length when missing.
+        if "Data speed" in window_events.columns:
+            data_speeds = window_events["Data speed"].values
+        else:
+            data_speeds = (
+                window_events["Packet speed"].values
+                * window_events.get("Avg packet len", pd.Series(0, index=window_events.index)).values
+            )
         avg_pkt_rate = float(np.mean(pkt_speeds)) if len(pkt_speeds) else 0.0
         avg_data_rate = float(np.mean(data_speeds)) if len(data_speeds) else 0.0
         peak_pkt_rate = float(np.max(pkt_speeds)) if len(pkt_speeds) else 0.0
@@ -467,10 +491,15 @@ class StreamEngine:
                 if hasattr(actual_type, "map")
                 else TYPE_TO_INT.get(str(actual_type), 0)
             )
+            pkt_speed = int(row["Packet speed"])
+            if "Data speed" in window_events.columns:
+                data_speed = int(row["Data speed"])
+            else:
+                data_speed = int(pkt_speed * row.get("Avg packet len", 0))
             event_samples.append({
-                "src_ip_count": int(row["Avg source IP count"]),
-                "pkt_speed": int(row["Packet speed"]),
-                "data_speed": int(row["Data speed"]),
+                "src_ip_count": int(row.get("Avg source IP count", 0)),
+                "pkt_speed": pkt_speed,
+                "data_speed": data_speed,
                 "port": int(row["Port number"]),
                 "actual": INT_TO_TYPE[actual_int],
                 "predicted": INT_TO_TYPE[int(pred_label)],
