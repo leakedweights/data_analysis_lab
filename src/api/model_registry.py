@@ -47,6 +47,9 @@ class _ScaledPredictor:
     def predict(self, X):
         return self._model.predict(self._scaler.transform(X))
 
+    def predict_proba(self, X):
+        return self._model.predict_proba(self._scaler.transform(X))
+
 
 def _safe_filename(name: str) -> str:
     return name.lower().replace(" ", "_").replace("(", "").replace(")", "")
@@ -120,6 +123,14 @@ class ModelRegistry:
             raise RuntimeError("No model selected")
         predictor, _ = self._models[self._current]
         return predictor.predict(X_aug)
+
+    def predict_proba(self, X_aug: np.ndarray) -> np.ndarray:
+        """Class probabilities; rows align with ``simulator.TYPE_ORDER``.
+        All five v2 classifiers expose ``predict_proba``."""
+        if self._current is None:
+            raise RuntimeError("No model selected")
+        predictor, _ = self._models[self._current]
+        return predictor.predict_proba(X_aug)
 
     # -- training / loading ------------------------------------------------
 

@@ -21,4 +21,5 @@ demo = [
     "redis>=5.0",
     "joblib>=1.4",
     "pydantic>=2.0",
+    "rich>=13",
 ]
